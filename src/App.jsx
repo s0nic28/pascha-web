@@ -123,10 +123,8 @@ function formatBooking(row) {
     guests: row.guests,
     occasion: row.occasion || "",
     request: row.request || "",
-    status: row.status,
-    createdAt: row.created_at
-      ? new Date(row.created_at).toLocaleString()
-      : "Unknown"
+    status: row.status || "Pending",
+    createdAt: row.created_at ? new Date(row.created_at).toLocaleString() : "Unknown"
   };
 }
 
@@ -137,11 +135,11 @@ async function fetchBookings() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Fetch bookings error:", error.message);
-    return [];
+    console.error("SUPABASE FETCH ERROR:", error);
+    throw error;
   }
 
-  return data.map(formatBooking);
+  return (data || []).map(formatBooking);
 }
 
 async function insertBooking(booking) {
@@ -158,10 +156,14 @@ async function insertBooking(booking) {
       request: booking.request,
       status: "Pending"
     })
-    .select()
+    .select("*")
     .single();
 
-  if (error) throw error;
+  if (error) {
+    console.error("SUPABASE INSERT ERROR:", error);
+    throw error;
+  }
+
   return formatBooking(data);
 }
 
@@ -175,8 +177,8 @@ async function findBooking(query) {
     .limit(1);
 
   if (error) {
-    console.error("Find booking error:", error.message);
-    return null;
+    console.error("SUPABASE TRACK ERROR:", error);
+    throw error;
   }
 
   return data?.[0] ? formatBooking(data[0]) : null;
@@ -188,17 +190,28 @@ async function updateBookingStatus(id, status) {
     .update({ status })
     .eq("id", id);
 
-  if (error) throw error;
+  if (error) {
+    console.error("SUPABASE UPDATE ERROR:", error);
+    throw error;
+  }
 }
 
 async function removeBooking(id) {
   const { error } = await supabase.from("bookings").delete().eq("id", id);
-  if (error) throw error;
+
+  if (error) {
+    console.error("SUPABASE DELETE ERROR:", error);
+    throw error;
+  }
 }
 
 async function removeAllBookings() {
-  const { error } = await supabase.from("bookings").delete().neq("tracking_id", "");
-  if (error) throw error;
+  const { error } = await supabase.from("bookings").delete().not("id", "is", null);
+
+  if (error) {
+    console.error("SUPABASE CLEAR ERROR:", error);
+    throw error;
+  }
 }
 
 function ScrollProgress() {
@@ -238,7 +251,6 @@ function CursorGlow() {
     }
 
     window.addEventListener("mousemove", move);
-
     return () => window.removeEventListener("mousemove", move);
   }, []);
 
@@ -473,18 +485,24 @@ function TrackBooking() {
   const [result, setResult] = useState(null);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [trackError, setTrackError] = useState("");
 
   async function handleTrack(e) {
     e.preventDefault();
     setLoading(true);
     setSearched(false);
     setResult(null);
+    setTrackError("");
 
-    const found = await findBooking(query);
-
-    setResult(found);
-    setSearched(true);
-    setLoading(false);
+    try {
+      const found = await findBooking(query);
+      setResult(found);
+      setSearched(true);
+    } catch (error) {
+      setTrackError(error.message || "Tracking failed.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -534,6 +552,12 @@ function TrackBooking() {
               </button>
             </div>
           </form>
+
+          {trackError && (
+            <div className="relative mt-6 rounded-[2rem] border border-red-400/25 bg-red-500/10 p-5 text-center text-red-200">
+              {trackError}
+            </div>
+          )}
 
           <AnimatePresence mode="wait">
             {searched && result && (
@@ -654,8 +678,8 @@ function Website() {
 
       setTimeout(() => setBookingDone(false), 9000);
     } catch (error) {
-      console.error(error);
-      setBookingError("Booking failed. Check Supabase setup and try again.");
+      console.error("SUPABASE BOOKING ERROR:", error);
+      setBookingError(error.message || "Booking failed. Check Supabase setup and try again.");
     } finally {
       setBookingLoading(false);
     }
@@ -1253,12 +1277,19 @@ function AdminDashboard() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [loading, setLoading] = useState(true);
+  const [adminError, setAdminError] = useState("");
 
   async function loadBookings() {
-    setLoading(true);
-    const data = await fetchBookings();
-    setBookings(data);
-    setLoading(false);
+    try {
+      setLoading(true);
+      setAdminError("");
+      const data = await fetchBookings();
+      setBookings(data);
+    } catch (error) {
+      setAdminError(error.message || "Failed to load bookings.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -1340,8 +1371,7 @@ function AdminDashboard() {
       await updateBookingStatus(id, status);
       await loadBookings();
     } catch (error) {
-      alert("Status update failed.");
-      console.error(error);
+      alert(error.message || "Status update failed.");
     }
   }
 
@@ -1350,8 +1380,7 @@ function AdminDashboard() {
       await removeBooking(id);
       await loadBookings();
     } catch (error) {
-      alert("Delete failed.");
-      console.error(error);
+      alert(error.message || "Delete failed.");
     }
   }
 
@@ -1363,8 +1392,7 @@ function AdminDashboard() {
       await removeAllBookings();
       await loadBookings();
     } catch (error) {
-      alert("Clear all failed.");
-      console.error(error);
+      alert(error.message || "Clear all failed.");
     }
   }
 
@@ -1506,6 +1534,12 @@ function AdminDashboard() {
               Live bookings now refresh automatically from any device.
             </p>
           </motion.div>
+
+          {adminError && (
+            <div className="mb-6 rounded-[2rem] border border-red-400/25 bg-red-500/10 p-5 text-red-200">
+              {adminError}
+            </div>
+          )}
 
           <div className="mb-6 grid gap-4 md:grid-cols-5">
             {[
