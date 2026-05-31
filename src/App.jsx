@@ -25,7 +25,7 @@ import {
   FaXmark
 } from "react-icons/fa6";
 
-const ADMIN_PASSWORD = "owner123";
+const ADMIN_PASSWORD = "pascahadmin";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 36, filter: "blur(10px)" },
@@ -197,7 +197,7 @@ async function removeBooking(id) {
 }
 
 async function removeAllBookings() {
-  const { error } = await supabase.from("bookings").delete().neq("id", "");
+  const { error } = await supabase.from("bookings").delete().neq("tracking_id", "");
   if (error) throw error;
 }
 
@@ -214,6 +214,7 @@ function ScrollProgress() {
 
     window.addEventListener("scroll", updateProgress);
     updateProgress();
+
     return () => window.removeEventListener("scroll", updateProgress);
   }, []);
 
@@ -237,6 +238,7 @@ function CursorGlow() {
     }
 
     window.addEventListener("mousemove", move);
+
     return () => window.removeEventListener("mousemove", move);
   }, []);
 
@@ -268,7 +270,11 @@ function FloatingParticles() {
         <motion.span
           key={p.id}
           initial={{ y: "110vh", opacity: 0, scale: 0.4 }}
-          animate={{ y: "-10vh", opacity: [0, 0.55, 0], scale: [0.3, 1, 0.2] }}
+          animate={{
+            y: "-10vh",
+            opacity: [0, 0.55, 0],
+            scale: [0.3, 1, 0.2]
+          }}
           transition={{
             duration: p.duration,
             repeat: Infinity,
@@ -581,6 +587,14 @@ function TrackBooking() {
                     <p className="mt-1 font-bold">{result.time}</p>
                   </div>
                 </div>
+
+                <p className="mt-5 text-sm leading-6 text-cream/60">
+                  {result.status === "Confirmed"
+                    ? "Your table is confirmed. Please arrive on time and enjoy your meal."
+                    : result.status === "Rejected"
+                    ? "Your request was rejected. Please contact the restaurant or try another time."
+                    : "Your request is still pending. The restaurant admin will update it soon."}
+                </p>
               </motion.div>
             )}
 
@@ -727,6 +741,25 @@ function Website() {
                 Track Booking <FaMagnifyingGlass />
               </a>
             </motion.div>
+
+            <motion.div variants={fadeUp} className="mt-10 grid max-w-lg grid-cols-3 gap-3">
+              {[
+                ["4.4", "Rating"],
+                ["Multi", "Cuisine"],
+                ["Avadi", "Location"]
+              ].map(([big, small]) => (
+                <motion.div
+                  whileHover={{ y: -5, scale: 1.03 }}
+                  key={big}
+                  className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 text-center backdrop-blur"
+                >
+                  <p className="font-display text-2xl font-black text-gold">{big}</p>
+                  <p className="mt-1 text-xs uppercase tracking-widest text-cream/50">
+                    {small}
+                  </p>
+                </motion.div>
+              ))}
+            </motion.div>
           </motion.div>
 
           <motion.div
@@ -754,6 +787,19 @@ function Website() {
                   Pascah Multicuisine Feast
                 </h3>
               </div>
+            </motion.div>
+
+            <motion.div
+              animate={{ y: [0, 18, 0], rotate: [0, -3, 0] }}
+              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
+              className="absolute -left-3 bottom-8 rounded-3xl border border-gold/20 bg-black/70 p-4 shadow-2xl backdrop-blur-xl md:-left-10"
+            >
+              <p className="text-xs uppercase tracking-widest text-cream/50">
+                Address
+              </p>
+              <p className="mt-1 flex items-center gap-2 font-bold text-gold">
+                <FaLocationDot /> Kamaraj Nagar, Avadi
+              </p>
             </motion.div>
           </motion.div>
         </div>
@@ -1216,7 +1262,33 @@ function AdminDashboard() {
   }
 
   useEffect(() => {
-    if (loggedIn) loadBookings();
+    if (!loggedIn) return;
+
+    loadBookings();
+
+    const channel = supabase
+      .channel("pascah-bookings-live")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "bookings"
+        },
+        () => {
+          loadBookings();
+        }
+      )
+      .subscribe();
+
+    const interval = setInterval(() => {
+      loadBookings();
+    }, 5000);
+
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
   }, [loggedIn]);
 
   const stats = useMemo(() => {
@@ -1431,7 +1503,7 @@ function AdminDashboard() {
               OP Admin Dashboard
             </h2>
             <p className="mt-2 text-sm text-cream/55">
-              Manage bookings, tracking IDs, customer calls, and live database status updates.
+              Live bookings now refresh automatically from any device.
             </p>
           </motion.div>
 
