@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from "./supabaseClient";
 import {
   FaArrowRight,
-  FaBowlFood,
   FaBurger,
   FaCalendarCheck,
   FaChampagneGlasses,
@@ -26,7 +26,6 @@ import {
 } from "react-icons/fa6";
 
 const ADMIN_PASSWORD = "owner123";
-const STORAGE_KEY = "pascah_bookings";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 36, filter: "blur(10px)" },
@@ -103,18 +102,6 @@ const reviews = [
   }
 ];
 
-function getBookings() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-  } catch {
-    return [];
-  }
-}
-
-function saveBookings(bookings) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings));
-}
-
 function makeTrackingId() {
   return `PAS-${Math.floor(100000 + Math.random() * 900000)}`;
 }
@@ -123,6 +110,95 @@ function isToday(dateValue) {
   if (!dateValue) return false;
   const today = new Date().toISOString().slice(0, 10);
   return dateValue === today;
+}
+
+function formatBooking(row) {
+  return {
+    id: row.id,
+    trackingId: row.tracking_id,
+    name: row.name,
+    phone: row.phone,
+    date: row.booking_date,
+    time: row.booking_time,
+    guests: row.guests,
+    occasion: row.occasion || "",
+    request: row.request || "",
+    status: row.status,
+    createdAt: row.created_at
+      ? new Date(row.created_at).toLocaleString()
+      : "Unknown"
+  };
+}
+
+async function fetchBookings() {
+  const { data, error } = await supabase
+    .from("bookings")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Fetch bookings error:", error.message);
+    return [];
+  }
+
+  return data.map(formatBooking);
+}
+
+async function insertBooking(booking) {
+  const { data, error } = await supabase
+    .from("bookings")
+    .insert({
+      tracking_id: booking.trackingId,
+      name: booking.name,
+      phone: booking.phone,
+      booking_date: booking.date,
+      booking_time: booking.time,
+      guests: booking.guests,
+      occasion: booking.occasion,
+      request: booking.request,
+      status: "Pending"
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return formatBooking(data);
+}
+
+async function findBooking(query) {
+  const clean = query.trim();
+
+  const { data, error } = await supabase
+    .from("bookings")
+    .select("*")
+    .or(`tracking_id.eq.${clean},phone.eq.${clean}`)
+    .limit(1);
+
+  if (error) {
+    console.error("Find booking error:", error.message);
+    return null;
+  }
+
+  return data?.[0] ? formatBooking(data[0]) : null;
+}
+
+async function updateBookingStatus(id, status) {
+  const { error } = await supabase
+    .from("bookings")
+    .update({ status })
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+async function removeBooking(id) {
+  const { error } = await supabase.from("bookings").delete().eq("id", id);
+  if (error) throw error;
+}
+
+async function removeAllBookings() {
+  const { error } = await supabase.from("bookings").delete().neq("id", "");
+  if (error) throw error;
 }
 
 function ScrollProgress() {
@@ -390,21 +466,19 @@ function TrackBooking() {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState(null);
   const [searched, setSearched] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  function handleTrack(e) {
+  async function handleTrack(e) {
     e.preventDefault();
+    setLoading(true);
+    setSearched(false);
+    setResult(null);
 
-    const clean = query.trim().toLowerCase();
-    const bookings = getBookings();
+    const found = await findBooking(query);
 
-    const found = bookings.find(
-      (booking) =>
-        booking.trackingId?.toLowerCase() === clean ||
-        booking.phone?.toLowerCase() === clean
-    );
-
-    setResult(found || null);
+    setResult(found);
     setSearched(true);
+    setLoading(false);
   }
 
   return (
@@ -447,9 +521,10 @@ function TrackBooking() {
               />
               <button
                 type="submit"
-                className="inline-flex items-center justify-center gap-3 rounded-full bg-gradient-to-r from-gold via-amber-200 to-gold px-7 py-4 text-sm font-black uppercase tracking-wider text-black shadow-[0_0_35px_rgba(212,165,80,0.25)] transition hover:scale-[1.02]"
+                disabled={loading}
+                className="inline-flex items-center justify-center gap-3 rounded-full bg-gradient-to-r from-gold via-amber-200 to-gold px-7 py-4 text-sm font-black uppercase tracking-wider text-black shadow-[0_0_35px_rgba(212,165,80,0.25)] transition hover:scale-[1.02] disabled:opacity-60"
               >
-                <FaMagnifyingGlass /> Track
+                <FaMagnifyingGlass /> {loading ? "Tracking..." : "Track"}
               </button>
             </div>
           </form>
@@ -506,14 +581,6 @@ function TrackBooking() {
                     <p className="mt-1 font-bold">{result.time}</p>
                   </div>
                 </div>
-
-                <p className="mt-5 text-sm leading-6 text-cream/60">
-                  {result.status === "Confirmed"
-                    ? "Your table is confirmed. Please arrive on time and enjoy your meal."
-                    : result.status === "Rejected"
-                    ? "Your request was rejected. Please contact the restaurant or try another time."
-                    : "Your request is still pending. The restaurant admin will update it soon."}
-                </p>
               </motion.div>
             )}
 
@@ -543,14 +610,17 @@ function TrackBooking() {
 function Website() {
   const [bookingDone, setBookingDone] = useState(false);
   const [latestBooking, setLatestBooking] = useState(null);
+  const [bookingLoading, setBookingLoading] = useState(false);
+  const [bookingError, setBookingError] = useState("");
 
-  function handleBooking(e) {
+  async function handleBooking(e) {
     e.preventDefault();
+    setBookingLoading(true);
+    setBookingError("");
 
     const form = new FormData(e.currentTarget);
 
     const newBooking = {
-      id: Date.now(),
       trackingId: makeTrackingId(),
       name: form.get("name"),
       phone: form.get("phone"),
@@ -559,19 +629,22 @@ function Website() {
       guests: form.get("guests"),
       occasion: form.get("occasion"),
       request: form.get("request"),
-      status: "Pending",
-      createdAt: new Date().toLocaleString()
+      status: "Pending"
     };
 
-    const oldBookings = getBookings();
-    const updatedBookings = [newBooking, ...oldBookings];
-    saveBookings(updatedBookings);
+    try {
+      const savedBooking = await insertBooking(newBooking);
+      setLatestBooking(savedBooking);
+      setBookingDone(true);
+      e.currentTarget.reset();
 
-    setLatestBooking(newBooking);
-    setBookingDone(true);
-    e.currentTarget.reset();
-
-    setTimeout(() => setBookingDone(false), 9000);
+      setTimeout(() => setBookingDone(false), 9000);
+    } catch (error) {
+      console.error(error);
+      setBookingError("Booking failed. Check Supabase setup and try again.");
+    } finally {
+      setBookingLoading(false);
+    }
   }
 
   return (
@@ -654,25 +727,6 @@ function Website() {
                 Track Booking <FaMagnifyingGlass />
               </a>
             </motion.div>
-
-            <motion.div variants={fadeUp} className="mt-10 grid max-w-lg grid-cols-3 gap-3">
-              {[
-                ["4.4", "Rating"],
-                ["Multi", "Cuisine"],
-                ["Avadi", "Location"]
-              ].map(([big, small]) => (
-                <motion.div
-                  whileHover={{ y: -5, scale: 1.03 }}
-                  key={big}
-                  className="rounded-3xl border border-white/10 bg-white/[0.04] p-4 text-center backdrop-blur"
-                >
-                  <p className="font-display text-2xl font-black text-gold">{big}</p>
-                  <p className="mt-1 text-xs uppercase tracking-widest text-cream/50">
-                    {small}
-                  </p>
-                </motion.div>
-              ))}
-            </motion.div>
           </motion.div>
 
           <motion.div
@@ -700,19 +754,6 @@ function Website() {
                   Pascah Multicuisine Feast
                 </h3>
               </div>
-            </motion.div>
-
-            <motion.div
-              animate={{ y: [0, 18, 0], rotate: [0, -3, 0] }}
-              transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
-              className="absolute -left-3 bottom-8 rounded-3xl border border-gold/20 bg-black/70 p-4 shadow-2xl backdrop-blur-xl md:-left-10"
-            >
-              <p className="text-xs uppercase tracking-widest text-cream/50">
-                Address
-              </p>
-              <p className="mt-1 flex items-center gap-2 font-bold text-gold">
-                <FaLocationDot /> Kamaraj Nagar, Avadi
-              </p>
             </motion.div>
           </motion.div>
         </div>
@@ -1039,10 +1080,17 @@ function Website() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               type="submit"
-              className="relative mt-6 w-full overflow-hidden rounded-full bg-gradient-to-r from-gold via-amber-200 to-gold px-8 py-4 text-sm font-black uppercase tracking-wider text-black shadow-[0_0_35px_rgba(212,165,80,0.35)]"
+              disabled={bookingLoading}
+              className="relative mt-6 w-full overflow-hidden rounded-full bg-gradient-to-r from-gold via-amber-200 to-gold px-8 py-4 text-sm font-black uppercase tracking-wider text-black shadow-[0_0_35px_rgba(212,165,80,0.35)] disabled:opacity-60"
             >
-              Send Booking Request
+              {bookingLoading ? "Sending Request..." : "Send Booking Request"}
             </motion.button>
+
+            {bookingError && (
+              <p className="mt-4 rounded-2xl border border-red-400/25 bg-red-500/10 p-4 text-center text-sm text-red-200">
+                {bookingError}
+              </p>
+            )}
 
             <AnimatePresence>
               {bookingDone && latestBooking && (
@@ -1078,9 +1126,7 @@ function Website() {
       </section>
 
       <LuxuryDivider />
-
       <TrackBooking />
-
       <LuxuryDivider />
 
       <section className="px-5 py-20">
@@ -1160,10 +1206,18 @@ function AdminDashboard() {
   const [bookings, setBookings] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [loading, setLoading] = useState(true);
+
+  async function loadBookings() {
+    setLoading(true);
+    const data = await fetchBookings();
+    setBookings(data);
+    setLoading(false);
+  }
 
   useEffect(() => {
-    setBookings(getBookings());
-  }, []);
+    if (loggedIn) loadBookings();
+  }, [loggedIn]);
 
   const stats = useMemo(() => {
     return {
@@ -1209,27 +1263,37 @@ function AdminDashboard() {
     setLoggedIn(false);
   }
 
-  function updateStatus(id, status) {
-    const updated = bookings.map((booking) =>
-      booking.id === id ? { ...booking, status } : booking
-    );
-
-    setBookings(updated);
-    saveBookings(updated);
+  async function updateStatus(id, status) {
+    try {
+      await updateBookingStatus(id, status);
+      await loadBookings();
+    } catch (error) {
+      alert("Status update failed.");
+      console.error(error);
+    }
   }
 
-  function deleteBooking(id) {
-    const updated = bookings.filter((booking) => booking.id !== id);
-    setBookings(updated);
-    saveBookings(updated);
+  async function deleteBooking(id) {
+    try {
+      await removeBooking(id);
+      await loadBookings();
+    } catch (error) {
+      alert("Delete failed.");
+      console.error(error);
+    }
   }
 
-  function clearAllBookings() {
+  async function clearAllBookings() {
     const confirmClear = window.confirm("Delete all bookings?");
     if (!confirmClear) return;
 
-    setBookings([]);
-    saveBookings([]);
+    try {
+      await removeAllBookings();
+      await loadBookings();
+    } catch (error) {
+      alert("Clear all failed.");
+      console.error(error);
+    }
   }
 
   function copyText(text) {
@@ -1261,7 +1325,7 @@ function AdminDashboard() {
               Admin Login
             </h1>
             <p className="mt-3 text-center text-sm leading-6 text-cream/60">
-              Pascah Restaurant booking control panel.
+              Pascah Restaurant database control panel.
             </p>
 
             <input
@@ -1316,7 +1380,7 @@ function AdminDashboard() {
                 Pascah
               </h1>
               <p className="text-xs uppercase tracking-widest text-cream/40">
-                Admin Control
+                Database Admin
               </p>
             </div>
           </div>
@@ -1332,14 +1396,13 @@ function AdminDashboard() {
             ))}
           </div>
 
-          <div className="mt-8 rounded-2xl border border-gold/20 bg-gold/10 p-4">
-            <p className="text-xs uppercase tracking-widest text-cream/40">
-              Demo Password
-            </p>
-            <p className="mt-1 font-black text-gold">{ADMIN_PASSWORD}</p>
-          </div>
-
           <div className="mt-8 grid gap-3">
+            <button
+              onClick={loadBookings}
+              className="rounded-full border border-gold/30 px-5 py-3 text-sm font-black text-gold hover:bg-gold hover:text-black"
+            >
+              Refresh Data
+            </button>
             <a
               href="/"
               className="rounded-full border border-gold/30 px-5 py-3 text-center text-sm font-black text-gold hover:bg-gold hover:text-black"
@@ -1362,13 +1425,13 @@ function AdminDashboard() {
             className="mb-6 rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 backdrop-blur-2xl"
           >
             <p className="text-sm font-black uppercase tracking-[0.28em] text-gold">
-              Restaurant Command Center
+              Supabase Connected
             </p>
             <h2 className="mt-2 font-display text-4xl font-black md:text-6xl">
               OP Admin Dashboard
             </h2>
             <p className="mt-2 text-sm text-cream/55">
-              Manage bookings, tracking IDs, customer calls, and live status updates.
+              Manage bookings, tracking IDs, customer calls, and live database status updates.
             </p>
           </motion.div>
 
@@ -1430,7 +1493,13 @@ function AdminDashboard() {
             )}
           </div>
 
-          {filteredBookings.length === 0 ? (
+          {loading ? (
+            <div className="rounded-[2rem] border border-white/10 bg-white/[0.04] p-10 text-center backdrop-blur-xl">
+              <p className="font-display text-3xl font-black text-gold">
+                Loading database...
+              </p>
+            </div>
+          ) : filteredBookings.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1441,7 +1510,7 @@ function AdminDashboard() {
                 No bookings found
               </h3>
               <p className="mt-3 text-cream/55">
-                Customer booking requests will appear here.
+                Customer booking requests will appear here from Supabase.
               </p>
             </motion.div>
           ) : (
@@ -1480,7 +1549,7 @@ function AdminDashboard() {
                           onClick={() => copyText(booking.trackingId)}
                           className="mt-1 inline-flex items-center gap-2 font-display text-xl font-black text-gold"
                         >
-                          {booking.trackingId || "OLD BOOKING"} <FaRegCopy />
+                          {booking.trackingId} <FaRegCopy />
                         </button>
                       </div>
 
