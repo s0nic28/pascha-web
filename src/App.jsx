@@ -25,7 +25,7 @@ import {
   FaXmark
 } from "react-icons/fa6";
 
-const ADMIN_PASSWORD = "pascahadmin";
+const ADMIN_PASSWORD = "owner123";
 const STORAGE_KEY = "pascah_bookings";
 
 const fadeUp = {
